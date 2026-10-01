@@ -65,7 +65,7 @@
     const hint = document.createElement('p');
     hint.className = 'sea-hint';
     hint.textContent = finePointer.matches
-      ? 'Left-click the sea to build an island, right-click to wash it away'
+      ? 'Left click the sea to build an island, right click to wash it away'
       : 'Tap to build an island, hold two fingers to wash it away';
     const footer = document.querySelector('.site-footer');
     if (footer) footer.prepend(hint);
