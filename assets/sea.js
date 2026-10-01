@@ -1,0 +1,520 @@
+// © 2026 TideQuest. All rights reserved. Proprietary; see LICENSE. Do not copy, extract or reuse.
+//
+// Interactive sea: the game's sea shader (depth bands, shore foam, wet sand, tide) under
+// dual-grid sand tiles, rendered on the CPU by sea.wasm and blitted here at the game's pixel
+// size. Mouse: left-click/drag raises sand, right-click/drag washes it away. Touch: one finger
+// raises sand, two fingers wash it away. Without WebAssembly the page keeps its static
+// screenshot background.
+(() => {
+  const root = document.documentElement;
+  const wasmUrl = new URL('sea.wasm', document.currentScript.src);
+
+  const TILE = 16;          // game px per tile
+  const TIDE_PERIOD = 24;   // seconds per full tide cycle
+  const TIDE_LOW = 20;      // shore_offset (px) at low tide; 0 at high tide (game TideConfig)
+  const FRAME_MS = 1000 / 30;
+  const UNDO_MS = 250;      // a second finger this soon after the first undoes the first's sand
+
+  const fail = () => root.classList.remove('sea-live');
+  if (!root.classList.contains('sea-live')) return;
+
+  const host = document.createElement('div');
+  host.className = 'sea';
+  host.setAttribute('aria-hidden', 'true');
+  const canvas = document.createElement('canvas');
+  host.append(canvas);
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) {
+    fail();
+    return;
+  }
+
+  const load = WebAssembly.instantiateStreaming
+    ? WebAssembly.instantiateStreaming(fetch(wasmUrl), {}).catch(() => fetchAndInstantiate())
+    : fetchAndInstantiate();
+
+  load
+    .then(({ instance }) => start(instance.exports))
+    .catch(() => {
+      host.remove();
+      fail();
+    });
+
+  // Fallback for servers that do not send application/wasm.
+  function fetchAndInstantiate() {
+    return fetch(wasmUrl)
+      .then((response) => (response.ok ? response.arrayBuffer() : Promise.reject(new Error(response.statusText))))
+      .then((bytes) => WebAssembly.instantiate(bytes, {}));
+  }
+
+  // ------------------------------------------------------------------ setup
+
+  function start(sea) {
+    if (!sea.sea_init()) throw new Error('sea init failed');
+
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+    const finePointer = matchMedia('(hover: hover) and (pointer: fine)');
+    let width = 0;
+    let height = 0;
+    let image = null;
+    let hover = null;
+    let frame = 0;
+    let lastDraw = -Infinity;
+    let dirty = true;
+    let startTime = performance.now();
+    let pausedAt = null; // performance.now() when paused (WCAG 2.2.2), null while playing
+
+    document.body.prepend(host);
+    const hint = document.createElement('p');
+    hint.className = 'sea-hint';
+    hint.textContent = finePointer.matches
+      ? 'Left-click the sea to build an island, right-click to wash it away'
+      : 'Tap to build an island, hold two fingers to wash it away';
+    const footer = document.querySelector('.site-footer');
+    if (footer) footer.prepend(hint);
+    else document.body.append(hint);
+
+    // Pause control in the footer; hidden when reduced motion already keeps the sea still.
+    const nav = footer && footer.querySelector('nav');
+    const pause = document.createElement('button');
+    pause.type = 'button';
+    pause.textContent = 'Pause animation';
+    pause.hidden = reducedMotion.matches;
+    if (nav) nav.append(pause);
+    pause.addEventListener('click', () => {
+      if (pausedAt === null) {
+        pausedAt = performance.now();
+        pause.textContent = 'Play animation';
+      } else {
+        startTime += performance.now() - pausedAt;
+        pausedAt = null;
+        pause.textContent = 'Pause animation';
+      }
+      requestDraw();
+    });
+
+    function layout() {
+      const vw = host.clientWidth;
+      const vh = host.clientHeight;
+      const scale = Math.max(2, Math.min(6, Math.round(Math.min(vw / 480, vh / 270))));
+      width = Math.ceil(vw / scale);
+      height = Math.ceil(vh / scale);
+      canvas.width = width;
+      canvas.height = height;
+      canvas.style.width = `${width * scale}px`;
+      canvas.style.height = `${height * scale}px`;
+      sea.sea_resize(width, height);
+      image = null;
+      dirty = true;
+    }
+
+    function draw(now) {
+      const t = reducedMotion.matches ? 0 : ((pausedAt ?? now) - startTime) / 1000;
+      const tide = reducedMotion.matches ? 0.5 : 0.5 + 0.5 * Math.sin((2 * Math.PI * t) / TIDE_PERIOD);
+      sea.sea_render(t, TIDE_LOW * (1 - tide));
+      // Memory can grow on resize, which detaches old views of it.
+      if (!image || image.data.buffer !== sea.memory.buffer) {
+        const pixels = new Uint8ClampedArray(sea.memory.buffer, sea.sea_frame(), width * height * 4);
+        image = new ImageData(pixels, width, height);
+      }
+      ctx.putImageData(image, 0, 0);
+    }
+
+    // Animated: at most 30 fps. Reduced motion or paused: frozen, drawn only on change.
+    function tick(now) {
+      frame = 0;
+      const animate = !reducedMotion.matches && pausedAt === null;
+      const elapsed = now - lastDraw;
+      if (dirty || (animate && (elapsed >= FRAME_MS - 1 || elapsed < 0))) {
+        dirty = false;
+        lastDraw = now;
+        draw(now);
+      }
+      if (animate) frame = requestAnimationFrame(tick);
+    }
+
+    function requestDraw() {
+      dirty = true;
+      if (!frame) frame = requestAnimationFrame(tick);
+    }
+
+    // ---------------------------------------------------------------- sound
+
+    // The game's Place Dirt and Place Water clips, embedded in the wasm. They are decoded up
+    // front without an AudioContext; the context itself is only created on the first press,
+    // as browsers require. Without Web Audio, or if a clip will not decode, the sea stays silent.
+    const SOUND_PLACE = 0;
+    const SOUND_WASH = 1;
+    const SOUND_GAP = 0.08; // seconds between repeats of one sound while dragging
+    const SOUND_VOLUME = 0.6;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const sounds = [];
+    const lastPlayed = [-Infinity, -Infinity];
+    let audio = null;
+    let soundOn = true; // per visit; nothing is stored on the device
+
+    if (AudioCtx && window.OfflineAudioContext) {
+      const decoder = new OfflineAudioContext(1, 1, 48000);
+      for (const index of [SOUND_PLACE, SOUND_WASH]) {
+        const length = sea.sea_sound_len(index);
+        if (!length) continue;
+        // Copied out of wasm memory: decodeAudioData takes ownership of its buffer.
+        const bytes = new Uint8Array(sea.memory.buffer, sea.sea_sound(index), length).slice();
+        decoder.decodeAudioData(bytes.buffer).then((buffer) => {
+          sounds[index] = { buffer, offset: onset(buffer) };
+        }, () => {});
+      }
+    }
+
+    // Where the clip's hit starts: a little before its 1 ms loudness first reaches half its peak.
+    // Playing from there makes the sound land with the tile instead of after a soft lead-in.
+    function onset(buffer) {
+      const data = buffer.getChannelData(0);
+      const step = Math.max(1, Math.round(buffer.sampleRate / 1000));
+      const loudness = [];
+      for (let i = 0; i + step <= data.length; i += step) {
+        let sum = 0;
+        for (let j = i; j < i + step; j++) sum += data[j] * data[j];
+        loudness.push(Math.sqrt(sum / step));
+      }
+      const peak = Math.max(...loudness);
+      const hit = loudness.findIndex((value) => value >= peak / 2);
+      return Math.max(0, hit - 3) / 1000;
+    }
+
+    function unlockAudio() {
+      if (!AudioCtx || !sounds.length) return;
+      if (!audio) audio = new AudioCtx();
+      if (audio.state === 'suspended') audio.resume().catch(() => {});
+    }
+
+    function playSound(index) {
+      if (!soundOn || !audio || !sounds[index] || audio.currentTime - lastPlayed[index] < SOUND_GAP) return;
+      lastPlayed[index] = audio.currentTime;
+      const { buffer, offset } = sounds[index];
+      const now = audio.currentTime;
+      const source = audio.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = 0.94 + Math.random() * 0.12; // a little variety on repeats
+      const gain = audio.createGain();
+      // A 3 ms fade-in, since playback starts mid-waveform.
+      gain.gain.setValueAtTime(0, now);
+      gain.gain.linearRampToValueAtTime(SOUND_VOLUME, now + 0.003);
+      source.connect(gain).connect(audio.destination);
+      source.start(now, offset);
+    }
+
+    // Sound toggle floating over the sea in the bottom-right corner, just above the footer bar;
+    // only when there is sound to toggle.
+    if (AudioCtx && footer && sea.sea_sound_len(SOUND_PLACE)) {
+      const SPEAKER = '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/>';
+      const ICON_ON = `${SPEAKER}<path d="M15.5 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>`;
+      const ICON_OFF = `${SPEAKER}<path d="M16 9.5l5 5M21 9.5l-5 5"/>`;
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'sound-toggle';
+      toggle.setAttribute('aria-label', 'Sound effects');
+      const render = () => {
+        toggle.setAttribute('aria-pressed', String(soundOn));
+        toggle.title = soundOn ? 'Mute sound effects' : 'Unmute sound effects';
+        toggle.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${soundOn ? ICON_ON : ICON_OFF}</svg>`;
+      };
+      toggle.addEventListener('click', () => {
+        soundOn = !soundOn;
+        render();
+      });
+      render();
+      (footer.querySelector('.footer-bar') || footer).append(toggle);
+      footer.classList.add('has-sound');
+    }
+
+    // ---------------------------------------------------------------- input
+
+    let edited = false;
+
+    function tileAt(event) {
+      const rect = canvas.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width) * width;
+      const y = ((event.clientY - rect.top) / rect.height) * height;
+      return [Math.floor(x / TILE), Math.floor(y / TILE)];
+    }
+
+    // Bresenham between the previous and current tile so fast drags leave no gaps.
+    // Tiles that actually changed are appended to `changed`.
+    function line(from, to, on, changed) {
+      let [x0, y0] = from;
+      const [x1, y1] = to;
+      const dx = Math.abs(x1 - x0);
+      const dy = -Math.abs(y1 - y0);
+      const sx = x0 < x1 ? 1 : -1;
+      const sy = y0 < y1 ? 1 : -1;
+      let err = dx + dy;
+      for (;;) {
+        if (sea.sea_set_tile(x0, y0, on ? 1 : 0)) changed.push([x0, y0]);
+        if (x0 === x1 && y0 === y1) break;
+        const e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+      }
+    }
+
+    // `raised` picks the sound: sand placed, or sand washed away.
+    function commit(changed, raised) {
+      if (!changed.length) return;
+      playSound(raised ? SOUND_PLACE : SOUND_WASH);
+      sea.sea_rebuild();
+      requestDraw();
+      if (!edited) {
+        edited = true;
+        hint.classList.add('is-done');
+      }
+    }
+
+    function paint(from, to, on) {
+      const changed = [];
+      line(from, to, on, changed);
+      commit(changed, on);
+      return changed;
+    }
+
+    // Mouse: one stroke at a time, the button picks raise or wash away.
+    let mouseMode = 0; // 1 = raising sand, -1 = washing it away
+    let mouseLast = null;
+
+    // Touch and pen: every finger down is tracked. One finger raises sand; once a second finger
+    // lands, all fingers wash sand away until every finger has lifted.
+    const fingers = new Map(); // pointerId -> { last: [tx, ty] }
+    let touchErase = false;
+    let firstDown = 0;
+    let firstAdded = [];
+
+    function onTouchDown(event, tile) {
+      if (fingers.size === 0) {
+        touchErase = false;
+        firstDown = event.timeStamp;
+        fingers.set(event.pointerId, { last: tile });
+        firstAdded = paint(tile, tile, true);
+        return;
+      }
+      fingers.set(event.pointerId, { last: tile });
+      if (!touchErase) {
+        touchErase = true;
+        // A near-simultaneous second finger meant a two-finger gesture all along.
+        if (event.timeStamp - firstDown <= UNDO_MS) {
+          for (const [tx, ty] of firstAdded) sea.sea_set_tile(tx, ty, 0);
+          commit(firstAdded, false);
+        }
+        firstAdded = [];
+        for (const finger of fingers.values()) paint(finger.last, finger.last, false);
+      } else {
+        paint(tile, tile, false);
+      }
+    }
+
+    function onTouchMove(event, tile) {
+      const finger = fingers.get(event.pointerId);
+      if (!finger) return;
+      const from = finger.last;
+      finger.last = tile;
+      // After a finger lifts from a two-finger gesture the rest stay idle until they lift too.
+      if (finger.idle) return;
+      const changed = paint(from, tile, !touchErase);
+      if (!touchErase) firstAdded.push(...changed);
+    }
+
+    function onTouchUp(event) {
+      if (!fingers.delete(event.pointerId)) return;
+      if (touchErase) for (const finger of fingers.values()) finger.idle = true;
+    }
+
+    // Any first press on the page (a link, the footer, the sea) starts the audio output, so its
+    // start-up delay is usually over before the first tile is placed.
+    addEventListener('pointerdown', unlockAudio, { capture: true, passive: true });
+    addEventListener('keydown', unlockAudio, { capture: true, passive: true });
+
+    host.addEventListener('pointerdown', (event) => {
+      const tile = tileAt(event);
+      if (event.pointerType === 'mouse') {
+        if (event.button !== 0 && event.button !== 2) return;
+        event.preventDefault();
+        mouseMode = event.button === 0 ? 1 : -1;
+        mouseLast = tile;
+        host.setPointerCapture(event.pointerId);
+        paint(tile, tile, mouseMode > 0);
+        return;
+      }
+      event.preventDefault();
+      host.setPointerCapture(event.pointerId);
+      onTouchDown(event, tile);
+    });
+
+    host.addEventListener('pointermove', (event) => {
+      const tile = tileAt(event);
+      if (event.pointerType !== 'mouse') {
+        onTouchMove(event, tile);
+        return;
+      }
+      if (!hover || hover[0] !== tile[0] || hover[1] !== tile[1]) {
+        hover = tile;
+        sea.sea_set_hover(tile[0], tile[1], 1);
+        requestDraw();
+      }
+      if (!mouseMode) return;
+      paint(mouseLast, tile, mouseMode > 0);
+      mouseLast = tile;
+    });
+
+    const endPointer = (event) => {
+      if (event.pointerType === 'mouse') {
+        mouseMode = 0;
+        mouseLast = null;
+      } else {
+        onTouchUp(event);
+      }
+    };
+    host.addEventListener('pointerup', endPointer);
+    host.addEventListener('pointercancel', endPointer);
+    host.addEventListener('pointerleave', (event) => {
+      if (event.pointerType !== 'mouse' || !hover) return;
+      hover = null;
+      sea.sea_set_hover(0, 0, 0);
+      requestDraw();
+    });
+    host.addEventListener('contextmenu', (event) => event.preventDefault());
+
+    let resizeFrame = 0;
+    addEventListener('resize', () => {
+      cancelAnimationFrame(resizeFrame);
+      resizeFrame = requestAnimationFrame(() => {
+        layout();
+        requestDraw();
+      });
+    });
+    reducedMotion.addEventListener('change', () => {
+      pause.hidden = reducedMotion.matches;
+      requestDraw();
+    });
+
+    // ---------------------------------------------------------- islands
+
+    // A few small islands, different on every load, so the sea never looks empty. They stay off
+    // the page content and footer, apart from each other, and to a small share of the screen.
+    function scatterIslands() {
+      const cols = Math.ceil(width / TILE);
+      const rows = Math.ceil(height / TILE);
+      const at = (x, y) => y * cols + x;
+      const inside = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows;
+      const random = (n) => Math.floor(Math.random() * n);
+
+      // Tiles under the content and footer (plus a margin) are off limits.
+      const blocked = new Uint8Array(cols * rows);
+      const canvasRect = canvas.getBoundingClientRect();
+      const perPx = width / canvasRect.width / TILE; // tiles per CSS px
+      for (const [selector, pad] of [['main', 1], ['.site-footer', 1]]) {
+        const el = document.querySelector(selector);
+        const r = el && el.getBoundingClientRect();
+        if (!r || !r.width) continue;
+        const x0 = Math.floor((r.left - canvasRect.left) * perPx) - pad;
+        const y0 = Math.floor((r.top - canvasRect.top) * perPx) - pad;
+        const x1 = Math.floor((r.right - canvasRect.left) * perPx) + pad;
+        const y1 = Math.floor((r.bottom - canvasRect.top) * perPx) + pad;
+        for (let y = Math.max(0, y0); y <= Math.min(rows - 1, y1); y++) {
+          for (let x = Math.max(0, x0); x <= Math.min(cols - 1, x1); x++) blocked[at(x, y)] = 1;
+        }
+      }
+
+      const SPACING = 4; // open-water tiles kept between islands
+      const owner = new Int16Array(cols * rows).fill(-1);
+      const free = (x, y, id) => {
+        if (!inside(x, y) || blocked[at(x, y)]) return false;
+        for (let dy = -SPACING; dy <= SPACING; dy++) {
+          for (let dx = -SPACING; dx <= SPACING; dx++) {
+            const o = inside(x + dx, y + dy) ? owner[at(x + dx, y + dy)] : -1;
+            if (o >= 0 && o !== id) return false;
+          }
+        }
+        return true;
+      };
+      const STEPS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+      // Grows a blob from a seed, preferring cells that touch more of it, so islands stay compact.
+      function grow(sx, sy, target, id) {
+        const land = new Set([at(sx, sy)]);
+        const touching = (x, y) => STEPS.filter(([dx, dy]) => land.has(at(x + dx, y + dy))).length;
+        while (land.size < target) {
+          const options = [];
+          for (const cell of land) {
+            const x = cell % cols;
+            const y = (cell - x) / cols;
+            for (const [dx, dy] of STEPS) {
+              const nx = x + dx;
+              const ny = y + dy;
+              if (!land.has(at(nx, ny)) && free(nx, ny, id)) options.push([nx, ny, touching(nx, ny)]);
+            }
+          }
+          if (!options.length) break;
+          let total = 0;
+          for (const o of options) total += (o[3] = 1 + 3 * o[2] * o[2]);
+          let pick = Math.random() * total;
+          const [x, y] = options.find((o) => (pick -= o[3]) < 0) || options[options.length - 1];
+          land.add(at(x, y));
+        }
+        // Fill notches: open cells mostly surrounded by this island.
+        for (const cell of [...land]) {
+          const x = cell % cols;
+          const y = (cell - x) / cols;
+          for (const [dx, dy] of STEPS) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if (!land.has(at(nx, ny)) && free(nx, ny, id) && touching(nx, ny) >= 3) land.add(at(nx, ny));
+          }
+        }
+        return land;
+      }
+
+      // Rejects slivers squeezed into narrow gaps: islands should be roughly round blobs.
+      function chunky(land) {
+        let x0 = cols;
+        let y0 = rows;
+        let x1 = -1;
+        let y1 = -1;
+        for (const cell of land) {
+          const x = cell % cols;
+          const y = (cell - x) / cols;
+          x0 = Math.min(x0, x);
+          x1 = Math.max(x1, x);
+          y0 = Math.min(y0, y);
+          y1 = Math.max(y1, y);
+        }
+        const w = x1 - x0 + 1;
+        const h = y1 - y0 + 1;
+        return Math.min(w, h) >= 2 && Math.max(w, h) <= 3 * Math.min(w, h);
+      }
+
+      const budget = Math.max(10, Math.round(cols * rows * 0.05));
+      const count = Math.min(4, Math.max(2, Math.round((cols * rows) / 170)));
+      let used = 0;
+      let made = 0;
+      for (let attempt = 0; attempt < 80 && made < count; attempt++) {
+        const target = Math.min(budget - used, 7 + random(12));
+        if (target < 5) break;
+        const sx = random(cols);
+        const sy = random(rows);
+        if (!free(sx, sy, made)) continue;
+        const land = grow(sx, sy, target, made);
+        if (land.size < 5 || !chunky(land)) continue;
+        for (const cell of land) {
+          owner[cell] = made;
+          sea.sea_set_tile(cell % cols, Math.floor(cell / cols), 1);
+        }
+        used += land.size;
+        made++;
+      }
+      sea.sea_rebuild();
+    }
+
+    layout();
+    scatterIslands();
+    requestDraw();
+  }
+})();

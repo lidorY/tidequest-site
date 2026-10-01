@@ -1,0 +1,37 @@
+TideQuest website
+Copyright (c) 2026 TideQuest. All rights reserved.
+
+This repository and the website published from it (tidequestgame.com),
+including its source code, text, game art, screenshots, logos, icons, tile
+data and sound effects (embedded in assets/sea.wasm) and all other content,
+are proprietary. No license or other right is granted to you, except to view
+the website in a web browser for your personal, non-commercial use.
+
+Without prior written permission from the copyright holder you may not:
+
+  1. copy, download for reuse, redistribute, publish, sell, rent or sublicense
+     any part of it;
+  2. modify it, or create derivative works from it;
+  3. decompile, decode, unpack, reverse engineer or otherwise attempt to
+     extract any asset or data from it, including the packed tile data and
+     sound effects, or circumvent the measures used to package it;
+  4. use any part of it, including its art, tile data and sound effects, in
+     any other website, game, product, project or dataset, including for
+     training machine-learning models.
+
+Being able to view, clone or fork this repository on GitHub, as GitHub's Terms
+of Service allow, grants no further rights.
+
+Third-party material keeps its own license and is not covered by the terms above:
+
+  - Lilita One font (assets/fonts/lilita-one.woff) by Juan Montoreano, licensed
+    under the SIL Open Font License 1.1: https://openfontlicense.org
+  - The Discord name and logo are trademarks of Discord Inc., used only to link
+    to the TideQuest Discord server.
+  - The X name and logo are trademarks of X Corp., used only to link to the
+    TideQuest account on X.
+  - Some game art and sound effects are used under licenses from their
+    third-party creators, who retain their rights. Nothing here sublicenses
+    them.
+
+For permission requests, contact TideQuest via https://tidequestgame.com/discord/
