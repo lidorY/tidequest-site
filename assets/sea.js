@@ -71,22 +71,37 @@
     if (footer) footer.prepend(hint);
     else document.body.append(hint);
 
-    // Pause button, hidden under reduced motion.
-    const nav = footer && footer.querySelector('nav');
+    // Icon buttons above the footer bar: pause (hidden under reduced motion) and mute.
+    const controls = document.createElement('div');
+    controls.className = 'sea-controls';
+    if (footer) {
+      footer.append(controls);
+      footer.classList.add('has-controls');
+    }
+    const icon = (paths) => `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
+
+    const PAUSE_ICON = icon('<path d="M9 6v12M15 6v12" stroke-width="3"/>');
+    const PLAY_ICON = icon('<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>');
     const pause = document.createElement('button');
     pause.type = 'button';
-    pause.textContent = 'Pause animation';
+    pause.className = 'sea-control';
     pause.hidden = reducedMotion.matches;
-    if (nav) nav.append(pause);
+    const renderPause = () => {
+      const label = pausedAt === null ? 'Pause animation' : 'Play animation';
+      pause.setAttribute('aria-label', label);
+      pause.title = label;
+      pause.innerHTML = pausedAt === null ? PAUSE_ICON : PLAY_ICON;
+    };
+    renderPause();
+    controls.append(pause);
     pause.addEventListener('click', () => {
       if (pausedAt === null) {
         pausedAt = performance.now();
-        pause.textContent = 'Play animation';
       } else {
         startTime += performance.now() - pausedAt;
         pausedAt = null;
-        pause.textContent = 'Pause animation';
       }
+      renderPause();
       requestDraw();
     });
 
@@ -199,27 +214,25 @@
       source.start(now, offset);
     }
 
-    // Mute button above the footer bar.
-    if (AudioCtx && footer && sea.sea_sound_len(SOUND_PLACE)) {
+    if (AudioCtx && sea.sea_sound_len(SOUND_PLACE)) {
       const SPEAKER = '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/>';
       const ICON_ON = `${SPEAKER}<path d="M15.5 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>`;
       const ICON_OFF = `${SPEAKER}<path d="M16 9.5l5 5M21 9.5l-5 5"/>`;
       const toggle = document.createElement('button');
       toggle.type = 'button';
-      toggle.className = 'sound-toggle';
+      toggle.className = 'sea-control';
       toggle.setAttribute('aria-label', 'Sound effects');
       const render = () => {
         toggle.setAttribute('aria-pressed', String(soundOn));
         toggle.title = soundOn ? 'Mute sound effects' : 'Unmute sound effects';
-        toggle.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${soundOn ? ICON_ON : ICON_OFF}</svg>`;
+        toggle.innerHTML = icon(soundOn ? ICON_ON : ICON_OFF);
       };
       toggle.addEventListener('click', () => {
         soundOn = !soundOn;
         render();
       });
       render();
-      (footer.querySelector('.footer-bar') || footer).append(toggle);
-      footer.classList.add('has-sound');
+      controls.append(toggle);
     }
 
     // ---------------------------------------------------------------- input

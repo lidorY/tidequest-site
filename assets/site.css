@@ -301,7 +301,7 @@ main {
   .social:focus-visible .cta { visibility: visible; }
 }
 
-/* Footer: copyright, legal links and the sea's pause control. */
+/* Footer: copyright and legal links. */
 .site-footer {
   position: relative;
   justify-self: stretch;
@@ -349,13 +349,29 @@ main {
   border-radius: 2px;
 }
 
-/* Mute button (sea.js), just above the footer bar. */
-.has-sound .footer-bar { position: relative; }
+/* Pause and mute icons (sea.js), just above the footer bar: on the hint's row at the right,
+   or on their own row above it on narrow screens. */
+.has-controls {
+  grid-template-areas: "top" "bar";
+}
 
-.sound-toggle {
-  position: absolute;
-  right: max(20px, env(safe-area-inset-right));
-  bottom: calc(100% + 4px);
+.has-controls .sea-hint {
+  grid-area: top;
+  align-self: end;
+}
+
+.has-controls .footer-bar { grid-area: bar; }
+
+.sea-controls {
+  grid-area: top;
+  justify-self: end;
+  align-self: end;
+  display: flex;
+  gap: 2px;
+  margin: 0 max(20px, env(safe-area-inset-right)) 4px 0;
+}
+
+.sea-control {
   display: grid;
   place-items: center;
   width: 44px;
@@ -371,22 +387,24 @@ main {
   transition: opacity 0.2s;
 }
 
-.sound-toggle:hover { opacity: 1; }
+.sea-control[hidden] { display: none; }
 
-.sound-toggle:focus-visible {
+.sea-control:hover { opacity: 1; }
+
+.sea-control:focus-visible {
   outline: 3px solid #fff;
   outline-offset: 2px;
   opacity: 1;
 }
 
-/* Keep the hint clear of the mute button. */
 @media (max-width: 640px) {
-  .has-sound .sea-hint { margin-inline: 64px; }
+  .has-controls { grid-template-areas: "controls" "top" "bar"; }
+  .sea-controls { grid-area: controls; margin-bottom: 0; }
 }
 
-.sound-toggle svg {
-  width: 28px;
-  height: 28px;
+.sea-control svg {
+  width: 26px;
+  height: 26px;
 }
 
 .footer-bar nav {
