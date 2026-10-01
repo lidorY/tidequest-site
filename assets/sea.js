@@ -394,7 +394,7 @@
       const blocked = new Uint8Array(cols * rows);
       const canvasRect = canvas.getBoundingClientRect();
       const perPx = width / canvasRect.width / TILE; // tiles per CSS px
-      for (const [selector, pad] of [['main', 1], ['.site-footer', 1]]) {
+      for (const [selector, pad] of [['main', 1], ['.site-footer', 1], ['.sea-controls', 1]]) {
         const el = document.querySelector(selector);
         const r = el && el.getBoundingClientRect();
         if (!r || !r.width) continue;

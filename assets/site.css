@@ -349,8 +349,7 @@ main {
   border-radius: 2px;
 }
 
-/* Pause and mute icons (sea.js), just above the footer bar: on the hint's row at the right,
-   or on their own row above it on narrow screens. */
+/* Pause, mute and (touch) build/wash icons (sea.js): on the hint's row at the right. */
 .has-controls {
   grid-template-areas: "top" "bar";
 }
@@ -397,9 +396,15 @@ main {
   opacity: 1;
 }
 
+/* Phones: a column at the right edge, floating just above the footer. */
 @media (max-width: 640px) {
-  .has-controls { grid-template-areas: "controls" "top" "bar"; }
-  .sea-controls { grid-area: controls; margin-bottom: 0; }
+  .sea-controls {
+    position: absolute;
+    right: max(12px, env(safe-area-inset-right));
+    bottom: calc(100% + 4px);
+    flex-direction: column;
+    margin: 0;
+  }
 }
 
 .sea-control svg {
