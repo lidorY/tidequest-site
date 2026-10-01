@@ -1,10 +1,7 @@
 // © 2026 TideQuest. All rights reserved. Proprietary; see LICENSE. Do not copy, extract or reuse.
 //
-// Interactive sea: the game's sea shader (depth bands, shore foam, wet sand, tide) under
-// dual-grid sand tiles, rendered on the CPU by sea.wasm and blitted here at the game's pixel
-// size. Mouse: left-click/drag raises sand, right-click/drag washes it away. Touch: one finger
-// raises sand, two fingers wash it away. Without WebAssembly the page keeps its static
-// screenshot background.
+// Interactive sea, rendered by sea.wasm. Left-click or one finger builds sand, right-click or two
+// fingers wash it away. Without WebAssembly the static screenshot stays.
 (() => {
   const root = document.documentElement;
   const wasmUrl = new URL('sea.wasm', document.currentScript.src);
@@ -13,7 +10,7 @@
   const TIDE_PERIOD = 24;   // seconds per full tide cycle
   const TIDE_LOW = 20;      // shore_offset (px) at low tide; 0 at high tide (game TideConfig)
   const FRAME_MS = 1000 / 30;
-  const UNDO_MS = 250;      // a second finger this soon after the first undoes the first's sand
+  const UNDO_MS = 250;      // a second finger this soon undoes the first finger's sand
 
   const fail = () => root.classList.remove('sea-live');
   if (!root.classList.contains('sea-live')) return;
@@ -62,7 +59,7 @@
     let lastDraw = -Infinity;
     let dirty = true;
     let startTime = performance.now();
-    let pausedAt = null; // performance.now() when paused (WCAG 2.2.2), null while playing
+    let pausedAt = null; // when paused, else null
 
     document.body.prepend(host);
     const hint = document.createElement('p');
@@ -74,7 +71,7 @@
     if (footer) footer.prepend(hint);
     else document.body.append(hint);
 
-    // Pause control in the footer; hidden when reduced motion already keeps the sea still.
+    // Pause button, hidden under reduced motion.
     const nav = footer && footer.querySelector('nav');
     const pause = document.createElement('button');
     pause.type = 'button';
@@ -120,7 +117,7 @@
       ctx.putImageData(image, 0, 0);
     }
 
-    // Animated: at most 30 fps. Reduced motion or paused: frozen, drawn only on change.
+    // Up to 30 fps, or only on change when paused or with reduced motion.
     function tick(now) {
       frame = 0;
       const animate = !reducedMotion.matches && pausedAt === null;
@@ -140,9 +137,8 @@
 
     // ---------------------------------------------------------------- sound
 
-    // The game's Place Dirt and Place Water clips, embedded in the wasm. They are decoded up
-    // front without an AudioContext; the context itself is only created on the first press,
-    // as browsers require. Without Web Audio, or if a clip will not decode, the sea stays silent.
+    // Place Dirt and Place Water clips from the wasm. The AudioContext waits for the first press,
+    // as browsers require.
     const SOUND_PLACE = 0;
     const SOUND_WASH = 1;
     const SOUND_GAP = 0.08; // seconds between repeats of one sound while dragging
@@ -151,14 +147,14 @@
     const sounds = [];
     const lastPlayed = [-Infinity, -Infinity];
     let audio = null;
-    let soundOn = true; // per visit; nothing is stored on the device
+    let soundOn = true; // not stored
 
     if (AudioCtx && window.OfflineAudioContext) {
       const decoder = new OfflineAudioContext(1, 1, 48000);
       for (const index of [SOUND_PLACE, SOUND_WASH]) {
         const length = sea.sea_sound_len(index);
         if (!length) continue;
-        // Copied out of wasm memory: decodeAudioData takes ownership of its buffer.
+        // decodeAudioData takes ownership of the buffer, so copy it out of wasm memory.
         const bytes = new Uint8Array(sea.memory.buffer, sea.sea_sound(index), length).slice();
         decoder.decodeAudioData(bytes.buffer).then((buffer) => {
           sounds[index] = { buffer, offset: onset(buffer) };
@@ -166,8 +162,7 @@
       }
     }
 
-    // Where the clip's hit starts: a little before its 1 ms loudness first reaches half its peak.
-    // Playing from there makes the sound land with the tile instead of after a soft lead-in.
+    // Start just before the clip first hits half its peak loudness, skipping the soft lead-in.
     function onset(buffer) {
       const data = buffer.getChannelData(0);
       const step = Math.max(1, Math.round(buffer.sampleRate / 1000));
@@ -195,17 +190,16 @@
       const now = audio.currentTime;
       const source = audio.createBufferSource();
       source.buffer = buffer;
-      source.playbackRate.value = 0.94 + Math.random() * 0.12; // a little variety on repeats
+      source.playbackRate.value = 0.94 + Math.random() * 0.12;
       const gain = audio.createGain();
-      // A 3 ms fade-in, since playback starts mid-waveform.
+      // Short fade-in, since playback starts mid-waveform.
       gain.gain.setValueAtTime(0, now);
       gain.gain.linearRampToValueAtTime(SOUND_VOLUME, now + 0.003);
       source.connect(gain).connect(audio.destination);
       source.start(now, offset);
     }
 
-    // Sound toggle floating over the sea in the bottom-right corner, just above the footer bar;
-    // only when there is sound to toggle.
+    // Mute button above the footer bar.
     if (AudioCtx && footer && sea.sea_sound_len(SOUND_PLACE)) {
       const SPEAKER = '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" fill="currentColor"/>';
       const ICON_ON = `${SPEAKER}<path d="M15.5 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/>`;
@@ -239,8 +233,7 @@
       return [Math.floor(x / TILE), Math.floor(y / TILE)];
     }
 
-    // Bresenham between the previous and current tile so fast drags leave no gaps.
-    // Tiles that actually changed are appended to `changed`.
+    // Bresenham, so fast drags leave no gaps. Changed tiles go into `changed`.
     function line(from, to, on, changed) {
       let [x0, y0] = from;
       const [x1, y1] = to;
@@ -258,7 +251,6 @@
       }
     }
 
-    // `raised` picks the sound: sand placed, or sand washed away.
     function commit(changed, raised) {
       if (!changed.length) return;
       playSound(raised ? SOUND_PLACE : SOUND_WASH);
@@ -277,12 +269,11 @@
       return changed;
     }
 
-    // Mouse: one stroke at a time, the button picks raise or wash away.
-    let mouseMode = 0; // 1 = raising sand, -1 = washing it away
+    // Mouse: the button picks build or wash.
+    let mouseMode = 0; // 1 build, -1 wash
     let mouseLast = null;
 
-    // Touch and pen: every finger down is tracked. One finger raises sand; once a second finger
-    // lands, all fingers wash sand away until every finger has lifted.
+    // Touch and pen: one finger builds. With a second finger down, all fingers wash until they lift.
     const fingers = new Map(); // pointerId -> { last: [tx, ty] }
     let touchErase = false;
     let firstDown = 0;
@@ -299,7 +290,6 @@
       fingers.set(event.pointerId, { last: tile });
       if (!touchErase) {
         touchErase = true;
-        // A near-simultaneous second finger meant a two-finger gesture all along.
         if (event.timeStamp - firstDown <= UNDO_MS) {
           for (const [tx, ty] of firstAdded) sea.sea_set_tile(tx, ty, 0);
           commit(firstAdded, false);
@@ -316,7 +306,7 @@
       if (!finger) return;
       const from = finger.last;
       finger.last = tile;
-      // After a finger lifts from a two-finger gesture the rest stay idle until they lift too.
+      // Once a finger lifts from a two-finger wash, the rest do nothing.
       if (finger.idle) return;
       const changed = paint(from, tile, !touchErase);
       if (!touchErase) firstAdded.push(...changed);
@@ -327,8 +317,7 @@
       if (touchErase) for (const finger of fingers.values()) finger.idle = true;
     }
 
-    // Any first press on the page (a link, the footer, the sea) starts the audio output, so its
-    // start-up delay is usually over before the first tile is placed.
+    // Start audio on the first press anywhere, so it's ready by the first tile.
     addEventListener('pointerdown', unlockAudio, { capture: true, passive: true });
     addEventListener('keydown', unlockAudio, { capture: true, passive: true });
 
@@ -397,8 +386,7 @@
 
     // ---------------------------------------------------------- islands
 
-    // A few small islands, different on every load, so the sea never looks empty. They stay off
-    // the page content and footer, apart from each other, and to a small share of the screen.
+    // A few random islands on load, kept off the content and footer and apart from each other.
     function scatterIslands() {
       const cols = Math.ceil(width / TILE);
       const rows = Math.ceil(height / TILE);
@@ -406,7 +394,6 @@
       const inside = (x, y) => x >= 0 && y >= 0 && x < cols && y < rows;
       const random = (n) => Math.floor(Math.random() * n);
 
-      // Tiles under the content and footer (plus a margin) are off limits.
       const blocked = new Uint8Array(cols * rows);
       const canvasRect = canvas.getBoundingClientRect();
       const perPx = width / canvasRect.width / TILE; // tiles per CSS px
@@ -437,7 +424,7 @@
       };
       const STEPS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
-      // Grows a blob from a seed, preferring cells that touch more of it, so islands stay compact.
+      // Grow from a seed, preferring cells that touch more of the island.
       function grow(sx, sy, target, id) {
         const land = new Set([at(sx, sy)]);
         const touching = (x, y) => STEPS.filter(([dx, dy]) => land.has(at(x + dx, y + dy))).length;
@@ -459,7 +446,7 @@
           const [x, y] = options.find((o) => (pick -= o[3]) < 0) || options[options.length - 1];
           land.add(at(x, y));
         }
-        // Fill notches: open cells mostly surrounded by this island.
+        // Fill notches.
         for (const cell of [...land]) {
           const x = cell % cols;
           const y = (cell - x) / cols;
@@ -472,7 +459,7 @@
         return land;
       }
 
-      // Rejects slivers squeezed into narrow gaps: islands should be roughly round blobs.
+      // Reject thin slivers.
       function chunky(land) {
         let x0 = cols;
         let y0 = rows;

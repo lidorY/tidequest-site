@@ -1,6 +1,5 @@
-// Mouse parallax: the invite drifts with the pointer and, when the static screenshot is the
-// background (no interactive sea), the screenshot drifts against it.
-// Mouse-only (no touch) and disabled when the visitor prefers reduced motion.
+// Mouse parallax: the foreground drifts with the pointer, and the static screenshot (when there
+// is no live sea) drifts against it. Mouse only, off with reduced motion.
 (() => {
   const finePointer = matchMedia('(hover: hover) and (pointer: fine)');
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
@@ -23,7 +22,7 @@
   function render() {
     x += (targetX - x) * EASE;
     y += (targetY - y) * EASE;
-    // The interactive sea stays put so painted tiles land exactly under the cursor.
+    // The live sea stays put so tiles land under the cursor.
     bg.style.transform = document.documentElement.classList.contains('sea-live')
       ? ''
       : `translate3d(${(-x * BG_SHIFT).toFixed(2)}px, ${(-y * BG_SHIFT).toFixed(2)}px, 0)`;

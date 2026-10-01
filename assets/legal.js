@@ -1,6 +1,5 @@
-// Privacy and accessibility notices as modal dialogs. Footer links (#privacy, #accessibility,
-// or /#... from other pages) and those URL hashes open them; the close button, Escape or a
-// click on the backdrop closes them. Without this script the CSS :target fallback shows them.
+// Privacy and accessibility dialogs, opened by #privacy and #accessibility links or URLs.
+// Close with the button, Escape or a click outside.
 (() => {
   const root = document.documentElement;
   const dialogs = new Map([...document.querySelectorAll('dialog.legal')].map((d) => [d.id, d]));
@@ -18,7 +17,7 @@
 
   for (const [id, dialog] of dialogs) {
     dialog.querySelector('.legal-close').addEventListener('click', () => dialog.close());
-    // The dialog element itself is only hit outside .legal-body, i.e. on the backdrop.
+    // Clicks on the dialog itself land outside .legal-body, on the backdrop.
     dialog.addEventListener('click', (event) => {
       if (event.target === dialog) dialog.close();
     });
