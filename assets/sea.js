@@ -1,7 +1,7 @@
 // © 2026 TideQuest. All rights reserved. Proprietary; see LICENSE. Do not copy, extract or reuse.
 //
-// Interactive sea, rendered by sea.wasm. Left-click or one finger builds sand, right-click or two
-// fingers wash it away. Without WebAssembly the static screenshot stays.
+// Interactive sea, rendered by sea.wasm. Left click builds sand and right click washes it away.
+// On touch screens a switch picks build or wash. Without WebAssembly the static screenshot stays.
 (() => {
   const root = document.documentElement;
   const wasmUrl = new URL('sea.wasm', document.currentScript.src);
@@ -10,7 +10,6 @@
   const TIDE_PERIOD = 24;   // seconds per full tide cycle
   const TIDE_LOW = 20;      // shore_offset (px) at low tide; 0 at high tide (game TideConfig)
   const FRAME_MS = 1000 / 30;
-  const UNDO_MS = 250;      // a second finger this soon undoes the first finger's sand
 
   const fail = () => root.classList.remove('sea-live');
   if (!root.classList.contains('sea-live')) return;
@@ -60,13 +59,14 @@
     let dirty = true;
     let startTime = performance.now();
     let pausedAt = null; // when paused, else null
+    let washMode = false; // touch switch: true washes sand away
 
     document.body.prepend(host);
     const hint = document.createElement('p');
     hint.className = 'sea-hint';
     hint.textContent = finePointer.matches
       ? 'Left click the sea to build an island, right click to wash it away'
-      : 'Tap to build an island, hold two fingers to wash it away';
+      : 'Tap to build an island. Switch to the wave to wash it away';
     const footer = document.querySelector('.site-footer');
     if (footer) footer.prepend(hint);
     else document.body.append(hint);
@@ -80,8 +80,29 @@
     }
     const icon = (paths) => `<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${paths}</svg>`;
 
+    const BUILD_ICON = icon('<path d="M3 18.5c2.5-5.5 5.5-8 9-8s6.5 2.5 9 8z" fill="currentColor"/><path d="M12 4v3M8.5 5.5l1 2M15.5 5.5l-1 2"/>');
+    const WASH_ICON = icon('<path d="M3 9.5c1.5-1.5 3-1.5 4.5 0s3 1.5 4.5 0 3-1.5 4.5 0 3 1.5 4.5 0M3 15c1.5-1.5 3-1.5 4.5 0s3 1.5 4.5 0 3-1.5 4.5 0 3 1.5 4.5 0"/>');
     const PAUSE_ICON = icon('<path d="M9 6v12M15 6v12" stroke-width="3"/>');
     const PLAY_ICON = icon('<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>');
+    // Build or wash switch for touch screens; the icon shows the current mode.
+    if (matchMedia('(any-pointer: coarse)').matches) {
+      const mode = document.createElement('button');
+      mode.type = 'button';
+      mode.className = 'sea-control';
+      mode.setAttribute('aria-label', 'Wash mode');
+      const renderMode = () => {
+        mode.setAttribute('aria-pressed', String(washMode));
+        mode.title = washMode ? 'Washing sand away. Tap to build' : 'Building sand. Tap to wash';
+        mode.innerHTML = washMode ? WASH_ICON : BUILD_ICON;
+      };
+      mode.addEventListener('click', () => {
+        washMode = !washMode;
+        renderMode();
+      });
+      renderMode();
+      controls.append(mode);
+    }
+
     const pause = document.createElement('button');
     pause.type = 'button';
     pause.className = 'sea-control';
@@ -286,49 +307,8 @@
     let mouseMode = 0; // 1 build, -1 wash
     let mouseLast = null;
 
-    // Touch and pen: one finger builds. With a second finger down, all fingers wash until they lift.
-    const fingers = new Map(); // pointerId -> { last: [tx, ty] }
-    let touchErase = false;
-    let firstDown = 0;
-    let firstAdded = [];
-
-    function onTouchDown(event, tile) {
-      if (fingers.size === 0) {
-        touchErase = false;
-        firstDown = event.timeStamp;
-        fingers.set(event.pointerId, { last: tile });
-        firstAdded = paint(tile, tile, true);
-        return;
-      }
-      fingers.set(event.pointerId, { last: tile });
-      if (!touchErase) {
-        touchErase = true;
-        if (event.timeStamp - firstDown <= UNDO_MS) {
-          for (const [tx, ty] of firstAdded) sea.sea_set_tile(tx, ty, 0);
-          commit(firstAdded, false);
-        }
-        firstAdded = [];
-        for (const finger of fingers.values()) paint(finger.last, finger.last, false);
-      } else {
-        paint(tile, tile, false);
-      }
-    }
-
-    function onTouchMove(event, tile) {
-      const finger = fingers.get(event.pointerId);
-      if (!finger) return;
-      const from = finger.last;
-      finger.last = tile;
-      // Once a finger lifts from a two-finger wash, the rest do nothing.
-      if (finger.idle) return;
-      const changed = paint(from, tile, !touchErase);
-      if (!touchErase) firstAdded.push(...changed);
-    }
-
-    function onTouchUp(event) {
-      if (!fingers.delete(event.pointerId)) return;
-      if (touchErase) for (const finger of fingers.values()) finger.idle = true;
-    }
+    // Touch and pen: every finger paints in the switch's mode.
+    const fingers = new Map(); // pointerId -> last tile
 
     // Start audio on the first press anywhere, so it's ready by the first tile.
     addEventListener('pointerdown', unlockAudio, { capture: true, passive: true });
@@ -347,13 +327,17 @@
       }
       event.preventDefault();
       host.setPointerCapture(event.pointerId);
-      onTouchDown(event, tile);
+      fingers.set(event.pointerId, tile);
+      paint(tile, tile, !washMode);
     });
 
     host.addEventListener('pointermove', (event) => {
       const tile = tileAt(event);
       if (event.pointerType !== 'mouse') {
-        onTouchMove(event, tile);
+        const last = fingers.get(event.pointerId);
+        if (!last) return;
+        fingers.set(event.pointerId, tile);
+        paint(last, tile, !washMode);
         return;
       }
       if (!hover || hover[0] !== tile[0] || hover[1] !== tile[1]) {
@@ -371,7 +355,7 @@
         mouseMode = 0;
         mouseLast = null;
       } else {
-        onTouchUp(event);
+        fingers.delete(event.pointerId);
       }
     };
     host.addEventListener('pointerup', endPointer);
